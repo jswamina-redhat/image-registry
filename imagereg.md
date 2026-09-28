@@ -6,7 +6,111 @@ This documentation will outline OCP Image Registry, how to push and maintain ima
 
 ## Background
 
-OpenShift Image Registry is an out-of-the-box, built-in container registry managed by the Image Registry Operator. It runs inside the openshift-image-registry namespace. The registry automatically handles container image management, storage, and build outputs for applications deployed on the Red Hat OpenShift Container Platform.
+OpenShift Image Registry is an out-of-the-box, built-in container registry managed by the Image Registry Operator. It runs inside the `openshift-image-registry` namespace. The registry automatically handles container image management, storage, and build outputs for applications deployed on the Red Hat OpenShift Container Platform.
+
+## Enabling the Image Registry
+
+To enable the internal OpenShift Image Registry, you must change its management state from Removed to Managed and configure persistent storage. On platforms like bare metal the registry is disabled by default until storage is provisioned
+
+### Provisioning & Configuring Storage
+
+The registry requires shared storage that supports ReadWriteMany (RWX) access.
+
+Step 1: Create PVC
+
+```
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rwx-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: nfs-client # Replace with your cluster's RWX-compatible StorageClass
+```
+
+Step 2: Edit Registry Configuration
+
+Edit the Image Registry Operator configuration resource (`oc edit configs.imageregistry.operator.openshift.io cluster`) to set `managementState: Managed` and assign your PVC claim. The operator will then automatically deploy the registry pods. 
+
+Step 3: Verify the Registry Status
+
+Check the ClusterOperator and pod status in the `openshift-image-registry` namespace to confirm the registry is healthy and running.
+
+### Configuring Service Account & Token
+
+Step 1: Create Service Account
+
+>CLI
+
+`oc create sa registry-sa -n <namespace>`
+
+>YAML Manifest
+
+```
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: registry-sa
+  namespace: <namespace>
+```
+
+Step 2: Grant Registry Permissions
+
+>Pull access (Read-only)
+
+```
+oc policy add-role-to-user system:image-puller system:serviceaccount:<namespace>:registry-sa -n <namespace>
+```
+
+>Push/Build access (Read/Write):
+
+```
+oc policy add-role-to-user system:image-builder system:serviceaccount:<namespace>:registry-sa -n <namespace>
+```
+
+Step 3: Generate a Long-Lived Token Secret
+
+
+>sa-token.yaml
+```
+apiVersion: v1
+kind: Secret
+metadata:
+  name: registry-sa-token
+  namespace: <namespace>
+  annotations:
+    kubernetes.io/service-account.name: registry-sa
+type: kubernetes.io/service-account-token
+```
+
+```
+oc apply -f sa-token.yaml
+```
+
+Step 4: Authenticate to the OpenShift Image Registry
+
+>Retrieve Token
+```
+TOKEN=$(oc get secret registry-sa-token -n <namespace> -o jsonpath='{.data.token}' | base64 -d)
+```
+
+>Expose Registry route
+```
+oc patch config.imageregistry.operator.openshift.io/cluster --type=merge -p '{"spec":{"defaultRoute":true}}'
+REGISTRY_HOST=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}')
+```
+
+>Authenticate using Podman
+```
+podman login -u serviceaccount -p $TOKEN $REGISTRY_HOST
+```
+
+Note: The username `-u` must be literally `serviceaccount`
 
 ## Pushing Images
 
@@ -111,7 +215,6 @@ Step 1: Switch the registry to Read-Only mode to prevent push errors or database
 
 ```
 oc patch configs.imageregistry.operator.openshift.io/cluster --type=merge -p '{"spec":{"readOnly":true}}'
-
 ```
 
 Step 2: Remote shell into a registry pod
@@ -148,81 +251,6 @@ oc -n openshift-image-registry rsh deployment/image-registry df -h /registry
 oc get clusteroperator image-registry
 ```
 
-## Scanning Images with Red Hat Advancec Cluster Security (ACS)
-
-To scan images in the internal OpenShift image registry using Red Hat Advanced Cluster Security (ACS), you need to configure an image integration within the ACS console so that its scanner (Scanner/StackRox) has permissions to pull and assess the internal images
-
-Step 1: Create a Service Account for ACS
-
->Run the following command to create a service account inside the openshift-image-registry namespace:
-
-```
-oc create sa acs-registry-scanner -n openshift-image-registry
-```
-
->Grant the service account the registry-viewer role so it can pull images
-
-```
-oc policy add-role-to-user registry-viewer system:serviceaccount:openshift-image-registry:acs-registry-scanner
-```
-
->Create authentication token for `ServiceAccount`
-
-```
-oc create token acs-registry-scanner -n openshift-image-registry --duration=8760h
-```
-
-Step 2: Retrieve the Authentication Token
-
-ACS will require this token to authenticate against the OpenShift registry.
-
-1. Extract the token value from the secret linked to the service account
-
-```
-oc describe secret acs-registry-scanner -n openshift-image-registry
-```
-
-2. Copy the token string provided
-
-Step 3: Configure the Integration in the ACS Portal
-
-You will need to declare the OpenShift registry as a verified source inside the Red Hat Advanced Cluster Security Portal.
-
-1. Log into your ACS Web Portal and navigate to `Platform Configuration` → `Integrations`
-
-2. Scroll to the `Image Integrations` section and select `Generic Docker Registry`
-
-3. Click New Integration and fill out the details
-    1. Integration name: `Internal OpenShift Registry` (or any descriptive name)
-    2. Endpoint: `image-registry.openshift-image-registry.svc:5000` (or your externally exposed registry route if scanning outside the cluster)
-    3. Username: `acs-registry-scanner`
-    4. Password: [Paste the Service Account Token you copied in Step 2]
-
-4. Click `Test` to ensure connection validity, then click `Create / Save`
-
-Step 4: Run an Image Scan Using the `roxctl` CLI
-
-0. Create token in RHACS Portal
-    1. Log in to your RHACS portal
-    2. Go to `Platform Configuration` → `Integrations`
-    3. Scroll down to the Authentication Tokens category and click on API Token
-    4. Click `Generate Token`
-    5. Enter a descriptive Name for your token and select an appropriate Role
-    6. Click `Generate`
-    7. Copy the generated token immediately and store it securely. You will not be shown this token again.
-
-1. Set security variables
-
-```
-export ROX_CENTRAL_ENDPOINT="<central_host>:<port>"
-export ROX_API_TOKEN="your-acs-api-token"
-```
-
-2. Execute an image check or full vulnerability scan
-
-```
-roxctl image check --image image-registry.openshift-image-registry.svc:5000/my-project/my-image:latest
-```
 
 
 ### References
@@ -232,7 +260,3 @@ roxctl image check --image image-registry.openshift-image-registry.svc:5000/my-p
 [Image Registry Operator](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/registry/configuring-registry-operator)
 
 [Pruning Objects](https://docs.redhat.com/en/documentation/openshift_container_platform/4.20/html/building_applications/pruning-objects)
-
-[Using Red Hat Advanced Cluster Security with the OpenShift Registry](https://www.redhat.com/en/blog/using-red-hat-advanced-cluster-security-with-the-openshift-registry)
-
-[Image Scanning](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_security_for_kubernetes/4.11/html/roxctl_cli/image-scanning-by-using-the-roxctl-cli-1)

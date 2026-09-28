@@ -134,7 +134,8 @@ echo $OCP_REGISTRY
 Step 2: Authenticate to the Registry
 
 ```
-podman login -u <user> -p $(oc whoami -t) --tls-verify=false $OCP_REGISTRY
+TOKEN=$(oc get secret registry-sa-token -n <namespace> -o jsonpath='{.data.token}' | base64 -d)
+podman login -u serviceaccount -p $TOKEN --tls-verify=false $OCP_REGISTRY
 ```
 
 Step 3: Target Your OpenShift Project

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This documentation will outline OCP Image Registry, how to push and maintain images, and how to scan images with Red Hat Advanced Cluster Security (ACS).
+This documentation will outline how to enable the image registry, provision storage, and push and maintain images.
 
 ## Background
 
@@ -10,7 +10,7 @@ OpenShift Image Registry is an out-of-the-box, built-in container registry manag
 
 ## Enabling the Image Registry
 
-To enable the internal OpenShift Image Registry, you must change its management state from Removed to Managed and configure persistent storage. On platforms like bare metal the registry is disabled by default until storage is provisioned
+To enable the internal OpenShift Image Registry, you must install the operator and change its management state from Removed to Managed and configure persistent storage. On platforms like bare metal the registry is disabled by default until storage is provisioned
 
 ### Provisioning & Configuring Storage
 
